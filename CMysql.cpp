@@ -1,8 +1,10 @@
 #include "CMysql.h"
+#ifndef CMYSQL_CPP
+#define CMYSQL_CPP 1
 CMysql::CMysql(const std::string& strHostName,const std::string& strUserName,const std::string& strPassword,
 				const std::string& strDataBaseName,const std::string& strTableName):
 		HostName(strHostName),UserName(strUserName),PassWord(strPassword),DataBaseName(strDataBaseName),
-		TableName(strTableName),nCurrentCol(0){
+		TableName(strTableName),nCurrentCol(0),strPrimarykey("id"){
 	hMysql = mysql_init(NULL);
 	bConnected = false;
 }
@@ -10,8 +12,11 @@ CMysql::~CMysql(void){
 	DisConnect(true);
 }
 bool CMysql::Connect(void){
-	if(hMysql != NULL && mysql_real_connect(hMysql,HostName.c_str(),UserName.c_str(),PassWord.c_str(),DataBaseName.c_str(),3306,NULL,0)){
+	if(hMysql != NULL && mysql_real_connect(hMysql,HostName.c_str(),UserName.c_str(),PassWord.c_str(),DataBaseName.c_str(),3306,NULL,CLIENT_INTERACTIVE)){
 		bConnected = true;
+		SetCharset();
+		SetTimeZone();
+		return true;
 	}else{
 		bConnected = false;
 		return false;
@@ -21,7 +26,6 @@ bool CMysql::DisConnect(bool bIsClose){
 	if(bConnected){
 		if(bIsClose){
 			bConnected = false;	
-			mysql_free_result(hMysql_res);
 			mysql_close(hMysql);
 		}
 		uErrState = ES_ARGUMENT;
@@ -60,6 +64,31 @@ unsigned int CMysql::ChangeTable(const std::string& strTableName){
 unsigned int CMysql::SetCharset(const std::string& strCharset){
 	if(bConnected){
 		return Query("set names '" + strCharset +"'");
+	}else{
+		return ES_NOCONNECT;
+	}
+}
+unsigned int CMysql::SetTimeZone(const std::string& strTime_zone){
+	if(bConnected){
+		return Query("set time_zone='" + strTime_zone +"'");
+	}else{
+		return ES_NOCONNECT;
+	}
+}
+unsigned int CMysql::SetInteractive_timeout(const std::string& strTime_out){
+	if(bConnected){
+		return Query("set interactive_timeout=" + strTime_out +"");
+	}else{
+		return ES_NOCONNECT;
+	}
+}
+unsigned int CMysql::IsConnected(void){
+	if(bConnected){
+		if(!mysql_ping(hMysql)){
+			return ES_NONE;
+		}else{
+			return ES_NOCONNECT;
+		}
 	}else{
 		return ES_NOCONNECT;
 	}
@@ -108,14 +137,6 @@ int CMysql::GetCurTblColNames(bool bUpdate){
 std::string  CMysql::MakeNull(void){
 	return "NULL";
 }
-std::string& CMysql::ToString(std::string& strForConversion){
-	return *(new std::string("\""+ AddSlashes(strForConversion) +"\""));
-}
-std::string& CMysql::ToString(int nForConversion){
-	std::ostringstream oss;
-	oss<<nForConversion;
-	return *(new std::string(oss.str()));
-}
 std::string& CMysql::AddSlashes(std::string& strForSlashes){
 	return StringReplace(strForSlashes,"\"","\\\"");
 }
@@ -142,9 +163,14 @@ CMysql::RowsType& CMysql::GetRow(const RowCondition& rcRowCondition,bool bIsDESC
 	if(bConnected){
 		if(TableName.size()){
 			RowCondition::const_iterator rcCiter = rcRowCondition.begin();
-			oss<<"select * from `"<<TableName<<"` where "<<rcCiter->first<<"="<<rcCiter->second;
+			oss<<"select * from `"<<TableName<<"` where ";//<<rcCiter->first<<"="<<rcCiter->second;
+			int nCount = 0;
+			for (RowConstCondition rcciter = rcRowCondition.begin();rcciter != rcRowCondition.end();++rcciter,++nCount)
+			{
+				oss<<rcciter->first<<"="<<rcciter->second<<((nCount != rcRowCondition.size()-1)?" AND ":"");
+			}
 			if(bIsDESC)
-				oss<<" order by "<<vecColNames.at(0)<<" DESC";
+				oss<<" order by "<<strPrimarykey<<" DESC";
 			if(Query(oss.str()) == ES_NONE){
 				MakeRes();
 				uErrState = ES_NONE;
@@ -165,7 +191,7 @@ CMysql::RowsType& CMysql::GetRow(int nFirst,int nLast,bool bIsDESC){
  		RowsType * RowsTmp = new RowsType;
 		if(nFirst < 0)
 			nFirst = 0;
-		if(nLast > svecRow.size())
+		if(nLast > static_cast<int>(svecRow.size()))
 			nLast =	svecRow.size();
 		for(;nFirst != nLast;++nFirst)
 			RowsTmp->push_back(svecRow.at(nFirst));
@@ -178,14 +204,17 @@ CMysql::RowsType& CMysql::GetRow(bool bIsDESC){
 	uErrState = GetRes(bIsDESC);
 	return svecRow;
 }
-
 unsigned int CMysql::GetRes(bool bIsDESC){
 	std::ostringstream oss;
 	if(bConnected){
 		if(TableName.size()){
 			oss<<"select * from `"<<TableName<<"` where 1";
-			if(bIsDESC)
-				oss<<" order by "<<vecColNames.at(0)<<" DESC";
+			if(bIsDESC && strGroupBy.empty())
+				oss<<" order by "<<strPrimarykey<<" DESC";
+			if(!strGroupBy.empty()){
+				oss<<" group by "<<strGroupBy;
+				strGroupBy.clear();
+			}
 			if(Query(oss.str()) == ES_NONE){
 				return MakeRes();
 			}else{
@@ -203,13 +232,30 @@ unsigned int CMysql::MakeRes(void){
 	svecRow.clear();	//Clear svecRow vector
 	hMysql_res = mysql_store_result(hMysql);
 	while(hMysql_row = mysql_fetch_row(hMysql_res)){
-		for(int nCol = 0;nCol < mysql_num_fields(hMysql_res);++nCol){
+		for(unsigned int nCol = 0;nCol < mysql_num_fields(hMysql_res);++nCol){
 			mtemp.insert(std::make_pair(nCol,(hMysql_row[nCol]==NULL?"":hMysql_row[nCol])));
 		}
 		svecRow.push_back(mtemp);
 		mtemp.clear();	//Clear mtemp vector
 	}
 	return ES_NONE;
+}
+unsigned int CMysql::MakeGroupby(const std::string& strGroupByCol,bool bIsDESC){
+	if(bConnected){
+		strGroupBy = strGroupBy = ((bIsDESC)?strGroupByCol+" DESC":strGroupByCol);;
+		return ES_NONE;
+	}else{
+		return ES_NOCONNECT;
+	}
+}
+unsigned int CMysql::MakePrimarykey(std::string& strPrimary){
+	if(bConnected){
+		transform(strPrimary.begin(),strPrimary.end(),strPrimary.begin(),toupper);
+		strPrimarykey = strPrimary;
+		return ES_NONE;
+	}else{
+		return ES_NOCONNECT;
+	}
 }
 unsigned int CMysql::AddRow(const RowType& rtNewRow){
 	std::ostringstream oss;
@@ -254,7 +300,7 @@ unsigned int CMysql::EditRow(const std::string& strRowCondition,const std::strin
 	std::ostringstream oss;
 	if(bConnected){
 		if(TableName.size()){
-			oss<<"update `"<<TableName<<"` set "<<strColumn<<"="<<strNewContent<<" where "<<strRowCondition;
+			oss<<"update `"<<TableName<<"` set "<<strColumn<<"="<<ToString(strNewContent)<<" where "<<strRowCondition;
 			return Query(oss.str());
 		}else{
 			return ES_NOTABLE;
@@ -267,7 +313,31 @@ unsigned int CMysql::EditRow(const std::string& strRowCondition,const Col_Pair& 
 	std::ostringstream oss;
 	if(bConnected){
 		if(TableName.size()){
-			oss<<"update `"<<TableName<<"` set "<<cpPair.first<<"="<<cpPair.second<<" where "<<strRowCondition;
+			oss<<"update `"<<TableName<<"` set "<<cpPair.first<<"="<<ToString(cpPair.second)<<" where "<<strRowCondition;
+			return Query(oss.str());
+		}else{
+			return ES_NOTABLE;
+		}
+	}else{
+		return ES_NOCONNECT;
+	}
+}
+unsigned int CMysql::EditRow(const Col_Pair& pairRowCondition,const RowType& rtRow){
+	std::ostringstream oss;
+	if(bConnected){
+		if(TableName.size()){
+			oss<<"update `"<<TableName<<"` set ";
+			int nCount = 0;
+			for(Row_const_iterator riter = rtRow.begin();riter != rtRow.end();++riter,++nCount){
+				std::string strTmp1 = vecColNames[nCount],strTmp2 = pairRowCondition.first;
+				transform(strTmp1.begin(),strTmp1.end(),strTmp1.begin(),toupper);
+				transform(strTmp2.begin(),strTmp2.end(),strTmp2.begin(),toupper);
+				if (strTmp1 != strTmp2)
+				{
+					oss<<vecColNames[nCount]<<"="<<ToString(riter->second)<<((nCount == vecColNames.size()-1)?" ":",");
+				}
+			}
+			oss<<"where "<<pairRowCondition.first<<"="<<ToString(pairRowCondition.second);
 			return Query(oss.str());
 		}else{
 			return ES_NOTABLE;
@@ -302,16 +372,16 @@ std::ostream& operator<<(std::ostream& out,CMysql& cms){
 	return out;
 }
 std::istream& operator>>(std::istream& in,CMysql& cms){
-	static CMysql::RowType rtTmp;
 	std::string strTmp;
 	in>>strTmp;
-	rtTmp.insert(std::make_pair(++cms.nCurrentCol,CMysql::ToString(strTmp)));	
+	cms.rtAddTmp.insert(std::make_pair(++cms.nCurrentCol,CMysql::ToString(strTmp)));	
 	if(cms.nCurrentCol == cms.vecColNames.size()){
-		std::cout<<cms.nCurrentCol<<rtTmp.size();
-		cms.AddRow(rtTmp);
+		std::cout<<cms.nCurrentCol<<cms.rtAddTmp.size();
+		cms.AddRow(cms.rtAddTmp);
 		cms.GetRes();
 		cms.nCurrentCol = 0;
-		rtTmp.clear();
+		cms.rtAddTmp.clear();
 	}
 	return in;
 }
+#endif

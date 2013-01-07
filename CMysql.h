@@ -1,10 +1,11 @@
 #ifndef CMYSQL_H
-#define CMYSQL_H
+#define CMYSQL_H 1
 #include <string>
 #include <sstream>
 #include <vector>
 #include <map>
 #include <utility>
+#include <algorithm>
 #include <iostream>
 #include <winsock2.h>
 #include "mysql.h"
@@ -26,10 +27,11 @@ class CMysql {
 		typedef std::vector< std::map<int,std::string> >::iterator Rows_iterator;
 		typedef std::vector< std::map<int,std::string> >::const_iterator Rows_const_iterator;
 		typedef std::map<int,std::string>::iterator Row_iterator;
+		typedef std::map<std::string,std::string>::const_iterator RowConstCondition;
 		typedef std::map<int,std::string>::const_iterator Row_const_iterator;
 		typedef std::pair<std::string,std::string> Col_Pair;
 
-		CMysql(void):HostName("localhost"),UserName("root"),PassWord(""),DataBaseName("test"),TableName("test"),nCurrentCol(0){
+		CMysql(void):HostName("localhost"),UserName("root"),PassWord(""),DataBaseName("test"),TableName("test"),nCurrentCol(0),strPrimarykey("id"){
 			hMysql = mysql_init(NULL);
 			bConnected = false;
 		}
@@ -44,6 +46,9 @@ class CMysql {
 		unsigned int SelectDataBase(const std::string& strBaseName);
 		unsigned int ChangeTable(const std::string& strTableName);
 		unsigned int SetCharset(const std::string& strCharset = "GBK");
+		unsigned int SetTimeZone(const std::string& strTime_zone = "+8:00");
+		unsigned int SetInteractive_timeout(const std::string& strTime_out = "24*3600");
+		unsigned int IsConnected(void);
 		unsigned int InitTable(void);
 
 		friend std::ostream& operator<<(std::ostream& out,CMysql& cms);
@@ -56,8 +61,13 @@ class CMysql {
 		friend CMysql& operator>>(CMysql& lvalue,double& rvalue);
 
 		static std::string  MakeNull(void);
-		static std::string& ToString(std::string& strForConversion);
-		static std::string& ToString(int nForConversion);
+		template <typename T>
+		static std::string& ToString(const T& strForConversion){
+			std::string str(strForConversion);
+			std::ostringstream oss;
+			oss<<"\""<<AddSlashes(str)<<"\"";
+			return *(new std::string(oss.str()));
+		}
 		static std::string& AddSlashes(std::string& strForSlashes);
 		static std::string& StripSlashes(std::string& strForSlashes);
 		static std::string& StringReplace(std::string& strSource,const std::string& forReplace,const std::string& asReplace);
@@ -68,11 +78,14 @@ class CMysql {
 		RowsType& GetRow(const int nFirst,const int nLast,bool bIsDESC = false);
 		RowsType& GetRow(bool bIsDESC = false);
 
+		unsigned int MakeGroupby(const std::string& strGroupByCol,bool bIsDESC = false);
+		unsigned int MakePrimarykey(std::string& strPrimary);
 		unsigned int AddRow(const RowType& rtNewRow);
 		unsigned int AddRow(const RowsType& rstNewRows);
 
 		unsigned int EditRow(const std::string& strRowCondition,const std::string& strColumn,const std::string& strNewContent);
 		unsigned int EditRow(const std::string& strRowCondition,const Col_Pair& cpPair);
+		unsigned int EditRow(const Col_Pair& pairRowCondition,const RowType& rtRow);
 
 		unsigned int DeleteRow(const std::string& strRowCondition);
 	protected:
@@ -87,6 +100,9 @@ class CMysql {
 		MYSQL_ROW hMysql_row;
 		unsigned int uErrState;
 		RowsType svecRow;
+		RowType rtAddTmp;
+		std::string strGroupBy;
+		std::string strPrimarykey;
 		std::vector<std::string> vecColNames;
 
 		unsigned int Query(const std::string strQuery);
